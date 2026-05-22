@@ -1,4 +1,4 @@
-# Copilot-LLM-Proxy
+# Copilot LLM Proxy
 
 Small FastAPI proxy for using custom AI endpoints with Copilot Chat custom model support.
 
@@ -123,6 +123,16 @@ Each custom model should point to the local proxy:
 ```
 
 The `id` must match a route key in [config.json](config.json).
+
+## Azure Foundry Quota
+
+Azure Foundry enforces per-minute token limits on each deployment. Copilot agent mode sends large context windows (conversation history, open files, tool definitions) and can exhaust the default quota quickly.
+
+If you see `Rate limit of 250000 per 60s exceeded for UserByModelByMinuteUncachedInputTokens`:
+
+1. **Wait 60 seconds** — the window resets automatically.
+2. **Increase the quota** — in Azure Foundry, open your deployment → *Edit deployment* → raise the tokens-per-minute limit.
+3. **Reduce VS Code context** — lower `maxInputTokens` in `chatLanguageModels.json` to prompt VS Code to trim context earlier.
 
 ## Quick Check
 
