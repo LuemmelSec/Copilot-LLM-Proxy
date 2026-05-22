@@ -170,37 +170,45 @@ def image_url_to_anthropic_source(url: str) -> Dict[str, Any]:
 
 def openai_content_to_anthropic(content: Any) -> List[Dict[str, Any]]:
     if isinstance(content, str):
-        return [{"type": "text", "text": content}]
+        return [{"type": "text", "text": content}] if content else []
 
     if not isinstance(content, list):
-        return [{"type": "text", "text": coerce_text(content)}]
+        text = coerce_text(content)
+        return [{"type": "text", "text": text}] if text else []
 
     blocks: List[Dict[str, Any]] = []
     for item in content:
         if isinstance(item, str):
-            blocks.append({"type": "text", "text": item})
+            if item:
+                blocks.append({"type": "text", "text": item})
             continue
 
         if not isinstance(item, dict):
-            blocks.append({"type": "text", "text": coerce_text(item)})
+            text = coerce_text(item)
+            if text:
+                blocks.append({"type": "text", "text": text})
             continue
 
         item_type = item.get("type")
         if item_type == "text":
-            blocks.append({"type": "text", "text": coerce_text(item.get("text"))})
+            text = coerce_text(item.get("text"))
+            if text:
+                blocks.append({"type": "text", "text": text})
         elif item_type == "image_url":
             image_url = item.get("image_url", {}) or {}
             url = image_url.get("url") if isinstance(image_url, dict) else image_url
             if url:
                 blocks.append({"type": "image", "source": image_url_to_anthropic_source(url)})
         elif item_type == "input_text":
-            blocks.append({"type": "text", "text": coerce_text(item.get("text"))})
+            text = coerce_text(item.get("text"))
+            if text:
+                blocks.append({"type": "text", "text": text})
         elif item_type == "input_image":
             url = item.get("image_url") or item.get("url")
             if url:
                 blocks.append({"type": "image", "source": image_url_to_anthropic_source(url)})
 
-    return blocks or [{"type": "text", "text": ""}]
+    return blocks
 
 
 def openai_tool_call_to_anthropic(tool_call: Dict[str, Any]) -> Dict[str, Any]:
@@ -258,6 +266,17 @@ def openai_tool_choice_to_anthropic(tool_choice: Any) -> Optional[Dict[str, Any]
     return None
 
 
+def append_anthropic_message(messages: List[Dict[str, Any]], role: str, content: List[Dict[str, Any]]) -> None:
+    if not content:
+        return
+
+    if messages and messages[-1].get("role") == role and isinstance(messages[-1].get("content"), list):
+        messages[-1]["content"].extend(content)
+        return
+
+    messages.append({"role": role, "content": content})
+
+
 def openai_messages_to_anthropic(messages: Any) -> Tuple[Optional[str], List[Dict[str, Any]]]:
     system_parts: List[str] = []
     anthropic_messages: List[Dict[str, Any]] = []
@@ -274,21 +293,22 @@ def openai_messages_to_anthropic(messages: Any) -> Tuple[Optional[str], List[Dic
         content = message.get("content")
 
         if role == "system":
-            system_parts.append("\n".join(block.get("text", "") for block in openai_content_to_anthropic(content)))
+            system_text = "\n".join(block.get("text", "") for block in openai_content_to_anthropic(content) if block.get("text"))
+            if system_text:
+                system_parts.append(system_text)
             continue
 
         if role == "tool":
-            anthropic_messages.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": message.get("tool_call_id", ""),
-                            "content": coerce_text(content),
-                        }
-                    ],
-                }
+            append_anthropic_message(
+                anthropic_messages,
+                "user",
+                [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": message.get("tool_call_id", ""),
+                        "content": coerce_text(content),
+                    }
+                ],
             )
             continue
 
@@ -299,7 +319,8 @@ def openai_messages_to_anthropic(messages: Any) -> Tuple[Optional[str], List[Dic
         if isinstance(tool_calls, list):
             blocks.extend(openai_tool_call_to_anthropic(tool_call) for tool_call in tool_calls if isinstance(tool_call, dict))
 
-        anthropic_messages.append({"role": mapped_role, "content": blocks or [{"type": "text", "text": ""}]})
+        if blocks:
+            append_anthropic_message(anthropic_messages, mapped_role, blocks)
 
     return "\n\n".join(part for part in system_parts if part), anthropic_messages
 
