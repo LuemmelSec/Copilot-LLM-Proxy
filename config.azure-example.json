@@ -1,0 +1,42 @@
+{
+  "debug": {
+    "enabled": true
+  },
+  "routes": {
+    "gpt-5.5": {
+      "provider": "openai",
+      "upstream_base_url": "https://YOUR-AZURE-OPENAI-RESOURCE-NAME.openai.azure.com/openai/v1",
+      "upstream_api_key_env": "AZURE_FOUNDRY_API_KEY",
+      "upstream_model": "gpt-5.5",
+      "auth_header": "Authorization",
+      "auth_prefix": "Bearer",
+      "remove_unsupported_parameters": true,
+      "force_temperature": null,
+      "extra_query_params": {}
+    },
+    "claude-sonnet-4-6": {
+      "provider": "anthropic",
+      "upstream_base_url": "https://YOUR-AZURE-OPENAI-RESOURCE-NAME.services.ai.azure.com/anthropic/v1",
+      "upstream_api_key_env": "AZURE_FOUNDRY_API_KEY",
+      "upstream_model": "claude-sonnet-4-6",
+      "auth_header": "Authorization",
+      "auth_prefix": "Bearer",
+      "extra_headers": {
+        "anthropic-version": "2023-06-01"
+      },
+      "extra_query_params": {}
+    },
+    "claude-opus-4-7": {
+      "provider": "anthropic",
+      "upstream_base_url": "https://YOUR-AZURE-OPENAI-RESOURCE-NAME.services.ai.azure.com/anthropic/v1",
+      "upstream_api_key_env": "AZURE_FOUNDRY_API_KEY",
+      "upstream_model": "claude-opus-4-7",
+      "auth_header": "Authorization",
+      "auth_prefix": "Bearer",
+      "extra_headers": {
+        "anthropic-version": "2023-06-01"
+      },
+      "extra_query_params": {}
+    }
+  }
+}
