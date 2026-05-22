@@ -1,0 +1,41 @@
+{
+  "debug": {
+    "enabled": true
+  },
+  "routes": {
+    "YOUR-OPENAI-DEPLOYMENT-NAME": {
+      "provider": "openai",
+      "upstream_base_url": "https://YOUR-AZURE-OPENAI-RESOURCE-NAME.openai.azure.com/openai/v1",
+      "upstream_api_key_env": "AZURE_FOUNDRY_API_KEY",
+      "upstream_model": "YOUR-OPENAI-DEPLOYMENT-NAME",
+      "auth_header": "Authorization",
+      "auth_prefix": "Bearer",
+      "remove_unsupported_parameters": true,
+      "force_temperature": null,
+      "extra_query_params": {}
+    },
+    "YOUR-ANTHROPIC-DEPLOYMENT-NAME": {
+      "provider": "anthropic",
+      "upstream_base_url": "https://YOUR-AI-SERVICES-RESOURCE-NAME.services.ai.azure.com/anthropic/v1",
+      "upstream_api_key_env": "AZURE_FOUNDRY_API_KEY",
+      "upstream_model": "YOUR-ANTHROPIC-DEPLOYMENT-NAME",
+      "auth_header": "Authorization",
+      "auth_prefix": "Bearer",
+      "extra_headers": {
+        "anthropic-version": "2023-06-01"
+      },
+      "extra_query_params": {}
+    },
+    "default": {
+      "provider": "openai",
+      "upstream_base_url": "https://YOUR-AZURE-OPENAI-RESOURCE-NAME.openai.azure.com/openai/v1",
+      "upstream_api_key_env": "AZURE_FOUNDRY_API_KEY",
+      "upstream_model": "YOUR-OPENAI-DEPLOYMENT-NAME",
+      "auth_header": "Authorization",
+      "auth_prefix": "Bearer",
+      "remove_unsupported_parameters": true,
+      "force_temperature": null,
+      "extra_query_params": {}
+    }
+  }
+}
