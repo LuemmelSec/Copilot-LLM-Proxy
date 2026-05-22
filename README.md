@@ -1,4 +1,4 @@
-# Copilot-AI-Proxy
+# Copilot-LLM-Proxy
 
 Small FastAPI proxy for using custom AI endpoints with Copilot Chat custom model support.
 
