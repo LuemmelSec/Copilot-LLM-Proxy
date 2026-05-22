@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import asyncio
 import time
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
@@ -10,7 +11,13 @@ import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
-app = FastAPI()
+BANNER = (
+    "\033[94m  Copilot LLM Proxy\033[0m"
+    "  \033[90m─\033[0m"
+    "  \033[92mhttp://127.0.0.1:8787/v1\033[0m\n"
+)
+
+app = FastAPI(on_startup=[lambda: print(BANNER, flush=True)])
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("ai-proxy")
@@ -40,6 +47,8 @@ ANTHROPIC_DROP_FIELDS = UNSUPPORTED_FIELDS | {
     "stream_options",
     "user",
 }
+
+TRANSIENT_UPSTREAM_STATUSES = {429, 500, 502, 503, 504, 529}
 
 
 def load_config() -> Dict[str, Any]:
@@ -149,6 +158,16 @@ def upstream_url(config: Dict[str, Any], path: str) -> str:
 
 def upstream_query_params(config: Dict[str, Any]) -> Dict[str, str]:
     return config.get("extra_query_params", {}) or {}
+
+
+def retry_after_seconds(response: httpx.Response, fallback: float) -> float:
+    retry_after = response.headers.get("retry-after")
+    if retry_after:
+        try:
+            return max(float(retry_after), 0.0)
+        except ValueError:
+            return fallback
+    return fallback
 
 
 def coerce_text(value: Any) -> str:
@@ -277,9 +296,22 @@ def append_anthropic_message(messages: List[Dict[str, Any]], role: str, content:
     messages.append({"role": role, "content": content})
 
 
+def last_anthropic_message_has_tool_use(messages: List[Dict[str, Any]], tool_call_id: str) -> bool:
+    if not messages or messages[-1].get("role") != "assistant":
+        return False
+
+    content = messages[-1].get("content")
+    if not isinstance(content, list):
+        return False
+
+    return any(isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id") == tool_call_id for block in content)
+
+
 def openai_messages_to_anthropic(messages: Any) -> Tuple[Optional[str], List[Dict[str, Any]]]:
     system_parts: List[str] = []
     anthropic_messages: List[Dict[str, Any]] = []
+    pending_tool_use_ids: set[str] = set()
+    accepting_tool_results = False
 
     if not isinstance(messages, list):
         return None, []
@@ -292,6 +324,10 @@ def openai_messages_to_anthropic(messages: Any) -> Tuple[Optional[str], List[Dic
         role = message.get("role")
         content = message.get("content")
 
+        if role != "tool" and pending_tool_use_ids:
+            pending_tool_use_ids.clear()
+            accepting_tool_results = False
+
         if role == "system":
             system_text = "\n".join(block.get("text", "") for block in openai_content_to_anthropic(content) if block.get("text"))
             if system_text:
@@ -299,17 +335,28 @@ def openai_messages_to_anthropic(messages: Any) -> Tuple[Optional[str], List[Dic
             continue
 
         if role == "tool":
-            append_anthropic_message(
-                anthropic_messages,
-                "user",
-                [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": message.get("tool_call_id", ""),
-                        "content": coerce_text(content),
-                    }
-                ],
-            )
+            tool_call_id = message.get("tool_call_id", "")
+            content_text = coerce_text(content)
+            if (
+                tool_call_id in pending_tool_use_ids
+                and (accepting_tool_results or last_anthropic_message_has_tool_use(anthropic_messages, tool_call_id))
+            ):
+                append_anthropic_message(
+                    anthropic_messages,
+                    "user",
+                    [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_call_id,
+                            "content": content_text,
+                        }
+                    ],
+                )
+                pending_tool_use_ids.remove(tool_call_id)
+                accepting_tool_results = True
+            elif content_text:
+                label = f"Tool result for {tool_call_id}:" if tool_call_id else "Tool result:"
+                append_anthropic_message(anthropic_messages, "user", [{"type": "text", "text": f"{label}\n{content_text}"}])
             continue
 
         mapped_role = "assistant" if role == "assistant" else "user"
@@ -317,7 +364,11 @@ def openai_messages_to_anthropic(messages: Any) -> Tuple[Optional[str], List[Dic
 
         tool_calls = message.get("tool_calls") or []
         if isinstance(tool_calls, list):
-            blocks.extend(openai_tool_call_to_anthropic(tool_call) for tool_call in tool_calls if isinstance(tool_call, dict))
+            tool_use_blocks = [openai_tool_call_to_anthropic(tool_call) for tool_call in tool_calls if isinstance(tool_call, dict)]
+            blocks.extend(tool_use_blocks)
+            if mapped_role == "assistant":
+                pending_tool_use_ids = {block["id"] for block in tool_use_blocks if block.get("id")}
+                accepting_tool_results = bool(pending_tool_use_ids)
 
         if blocks:
             append_anthropic_message(anthropic_messages, mapped_role, blocks)
@@ -589,9 +640,29 @@ async def forward_anthropic_chat(body: Dict[str, Any], config: Dict[str, Any]) -
 
     if is_stream:
         client = httpx.AsyncClient(timeout=None)
-        upstream_request = client.build_request("POST", url, headers=headers, params=params, json=anthropic_body)
-        upstream_response = await client.send(upstream_request, stream=True)
-        log_debug(config, "upstream anthropic response", status=upstream_response.status_code, content_type=upstream_response.headers.get("content-type"))
+        upstream_response: Optional[httpx.Response] = None
+        for attempt in range(3):
+            upstream_request = client.build_request("POST", url, headers=headers, params=params, json=anthropic_body)
+            upstream_response = await client.send(upstream_request, stream=True)
+            log_debug(
+                config,
+                "upstream anthropic response",
+                status=upstream_response.status_code,
+                content_type=upstream_response.headers.get("content-type"),
+                attempt=attempt + 1,
+            )
+
+            if upstream_response.status_code not in TRANSIENT_UPSTREAM_STATUSES or attempt == 2:
+                break
+
+            delay = retry_after_seconds(upstream_response, 0.75 * (2 ** attempt))
+            await upstream_response.aclose()
+            log_debug(config, "retry anthropic stream", status=upstream_response.status_code, delay=delay)
+            await asyncio.sleep(delay)
+
+        if upstream_response is None:
+            await client.aclose()
+            return Response(content=b"", status_code=502, media_type="application/json")
 
         if upstream_response.status_code >= 400:
             error_body = await upstream_response.aread()
@@ -610,9 +681,26 @@ async def forward_anthropic_chat(body: Dict[str, Any], config: Dict[str, Any]) -
         )
 
     async with httpx.AsyncClient(timeout=None) as client:
-        upstream_response = await client.post(url, headers=headers, params=params, json=anthropic_body)
+        upstream_response: Optional[httpx.Response] = None
+        for attempt in range(3):
+            upstream_response = await client.post(url, headers=headers, params=params, json=anthropic_body)
+            log_debug(
+                config,
+                "upstream anthropic response",
+                status=upstream_response.status_code,
+                content_type=upstream_response.headers.get("content-type"),
+                attempt=attempt + 1,
+            )
 
-    log_debug(config, "upstream anthropic response", status=upstream_response.status_code, content_type=upstream_response.headers.get("content-type"))
+            if upstream_response.status_code not in TRANSIENT_UPSTREAM_STATUSES or attempt == 2:
+                break
+
+            delay = retry_after_seconds(upstream_response, 0.75 * (2 ** attempt))
+            log_debug(config, "retry anthropic chat", status=upstream_response.status_code, delay=delay)
+            await asyncio.sleep(delay)
+
+    if upstream_response is None:
+        return Response(content=b"", status_code=502, media_type="application/json")
 
     if upstream_response.status_code >= 400:
         return Response(
